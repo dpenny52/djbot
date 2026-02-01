@@ -245,10 +245,19 @@ def mix_with_eq(outgoing_audio, incoming_audio, outgoing_start_sample,
             out_low_gain = 0.0
             in_low_gain = 1.0
 
-        # === HIGHS: swap at 8-bar boundary (offset from bass) ===
-        if blend_pos < high_swap_sample:
+        # === HIGHS: 4-bar crossfade centered on 8-bar boundary ===
+        high_fade_duration = 4 * bar_samples
+        high_fade_start = high_swap_sample - (high_fade_duration // 2)
+        high_fade_end = high_swap_sample + (high_fade_duration // 2)
+
+        if blend_pos < high_fade_start:
             out_high_gain = 1.0
             in_high_gain = 0.0
+        elif blend_pos < high_fade_end:
+            # Equal-power crossfade over 4 bars
+            fade_progress = (blend_pos - high_fade_start) / high_fade_duration
+            out_high_gain = np.sqrt(1.0 - fade_progress)
+            in_high_gain = np.sqrt(fade_progress)
         else:
             out_high_gain = 0.0
             in_high_gain = 1.0
@@ -287,6 +296,14 @@ def mix_with_eq(outgoing_audio, incoming_audio, outgoing_start_sample,
             cut_progress = min(1.0, cut_progress)
             out_low_gain *= (1.0 - cut_progress)
             out_high_gain *= (1.0 - cut_progress)
+
+        # Apply global fade-in to incoming track (0.1s) to avoid click
+        fade_in_samples = int(0.1 * sr)
+        if blend_pos < fade_in_samples:
+            fade_in_mult = blend_pos / fade_in_samples
+            in_low_gain *= fade_in_mult
+            in_mid_gain *= fade_in_mult
+            in_high_gain *= fade_in_mult
 
         # Combine
         sample = (out_low * out_low_gain + in_low * in_low_gain +

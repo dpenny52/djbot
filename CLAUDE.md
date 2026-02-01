@@ -34,8 +34,9 @@ Creates beatmatched DJ mixes from multiple tracks.
 - Use scipy butterworth filters (24dB/octave) for clean band separation
 - Crossovers: Low 0-250Hz, Mid 250-2500Hz, High 2500Hz+
 - Bass swaps on 16-bar boundaries (never both tracks at once)
-- Highs swap on 8-bar boundaries, offset from bass
+- Highs: 4-bar equal-power crossfade centered on 8-bar boundary
 - Mids blend gradually with hard cut at end
+- 0.1s fade-in on incoming track to avoid clicks
 
 ## Usage
 
