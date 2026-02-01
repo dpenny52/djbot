@@ -474,27 +474,25 @@ def main():
             mix = new_mix
 
         blend_start_sample = int(blend_beat_time * sr)
-        t = np.linspace(0, 1, crossfade_samples).reshape(-1, 1)
-        fade_out = np.sqrt(1 - t)
-        fade_in = np.sqrt(t)
-
         blend_end_sample = blend_start_sample + crossfade_samples
 
-        for j in range(crossfade_samples):
+        print(f"  Mixing with 3-band EQ...")
+        eq_mixed = mix_with_eq(
+            outgoing['audio_stretched'],
+            incoming['audio_stretched'],
+            current_track_start,
+            incoming_start_sample,
+            blend_start_sample,
+            crossfade_samples,
+            sr,
+            master_interval
+        )
+
+        # Apply the EQ-mixed transition to the main mix
+        for j in range(len(eq_mixed)):
             pos = blend_start_sample + j
-            if pos >= len(mix):
-                break
-
-            out_pos = pos - current_track_start
-            in_pos = pos - incoming_start_sample
-
-            sample = np.zeros(2)
-            if 0 <= out_pos < len(outgoing['audio_stretched']):
-                sample += outgoing['audio_stretched'][out_pos] * fade_out[j, 0]
-            if 0 <= in_pos < len(incoming['audio_stretched']):
-                sample += incoming['audio_stretched'][in_pos] * fade_in[j, 0]
-
-            mix[pos] = sample
+            if pos < len(mix):
+                mix[pos] = eq_mixed[j]
 
         # Incoming solo
         incoming_audio = incoming['audio_stretched']
