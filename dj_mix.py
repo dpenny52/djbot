@@ -13,6 +13,7 @@ import wave
 import numpy as np
 import librosa
 import os
+from scipy.signal import butter, sosfilt
 
 TRACKS = [
     "tracks/Steinmetz - STNMTZ001 - Kraft - 01 Steinmetz - Kraft (Original Mix).wav",
@@ -26,6 +27,11 @@ OUTPUT = "mixes/mix.wav"
 BLEND_BEFORE_END_SECONDS = 60.0
 CROSSFADE_SECONDS = 30.0
 HOP_LENGTH = 128
+
+# EQ crossover frequencies (Hz)
+LOW_CUTOFF = 250
+HIGH_CUTOFF = 2500
+FILTER_ORDER = 4  # 24dB/octave Linkwitz-Riley
 
 
 def load_wav_float(filepath):
@@ -98,6 +104,51 @@ def time_stretch_stereo(audio, rate):
     left = librosa.effects.time_stretch(audio[:, 0].astype(np.float32), rate=rate)
     right = librosa.effects.time_stretch(audio[:, 1].astype(np.float32), rate=rate)
     return np.column_stack([left, right]).astype(np.float64)
+
+
+def create_lowpass(cutoff, sr, order=FILTER_ORDER):
+    """Create lowpass filter coefficients."""
+    nyq = sr / 2
+    normalized_cutoff = cutoff / nyq
+    sos = butter(order, normalized_cutoff, btype='low', output='sos')
+    return sos
+
+
+def create_highpass(cutoff, sr, order=FILTER_ORDER):
+    """Create highpass filter coefficients."""
+    nyq = sr / 2
+    normalized_cutoff = cutoff / nyq
+    sos = butter(order, normalized_cutoff, btype='high', output='sos')
+    return sos
+
+
+def create_bandpass(lowcut, highcut, sr, order=FILTER_ORDER):
+    """Create bandpass filter coefficients."""
+    nyq = sr / 2
+    low = lowcut / nyq
+    high = highcut / nyq
+    sos = butter(order, [low, high], btype='band', output='sos')
+    return sos
+
+
+def apply_filter(audio, sos):
+    """Apply filter to stereo audio."""
+    left = sosfilt(sos, audio[:, 0])
+    right = sosfilt(sos, audio[:, 1])
+    return np.column_stack([left, right])
+
+
+def split_to_bands(audio, sr):
+    """Split audio into low, mid, high frequency bands."""
+    low_sos = create_lowpass(LOW_CUTOFF, sr)
+    mid_sos = create_bandpass(LOW_CUTOFF, HIGH_CUTOFF, sr)
+    high_sos = create_highpass(HIGH_CUTOFF, sr)
+
+    return {
+        'low': apply_filter(audio, low_sos),
+        'mid': apply_filter(audio, mid_sos),
+        'high': apply_filter(audio, high_sos),
+    }
 
 
 def main():
