@@ -33,3 +33,9 @@ source venv/bin/activate && python dj_mix.py
 ```bash
 pip install numpy librosa
 ```
+
+## Notes
+
+- Expects stereo 16-bit WAV files (44.1kHz)
+- `tracks/` and `mixes/` directories are gitignored - create them manually
+- Track paths are hardcoded in `dj_mix.py` - edit before running
