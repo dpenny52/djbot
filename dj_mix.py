@@ -151,6 +151,51 @@ def split_to_bands(audio, sr):
     }
 
 
+def calculate_phrase_points(blend_start, master_interval, transition_duration):
+    """
+    Calculate phrase-aligned timing points for EQ transitions.
+
+    Returns dict with sample-relative timing (seconds from blend_start):
+    - bass_swap: 16-bar boundary for bass handoff
+    - high_swap: 8-bar boundary (offset from bass) for highs handoff
+    - hard_cut_start: 16-bar boundary near end for final cut
+    - hard_cut_end: 1-2 bars after hard_cut_start
+    """
+    bar_length = 4 * master_interval  # 4 beats per bar
+    phrase_8 = 8 * bar_length
+    phrase_16 = 16 * bar_length
+
+    # Bass swaps at middle 16-bar boundary
+    mid_point = transition_duration / 2
+    bass_swap = round(mid_point / phrase_16) * phrase_16
+    if bass_swap == 0:
+        bass_swap = phrase_16
+
+    # Highs swap at 8-bar boundary, offset from bass
+    # First swap is at 8 bars (before bass swap at 16)
+    high_swap = phrase_8
+
+    # Hard cut at last 16-bar boundary that fits, with 2 bars fade
+    last_phrase_16 = int(transition_duration / phrase_16) * phrase_16
+    if last_phrase_16 <= bass_swap:
+        last_phrase_16 = bass_swap + phrase_16
+    if last_phrase_16 > transition_duration:
+        last_phrase_16 = transition_duration - (2 * bar_length)
+
+    hard_cut_start = last_phrase_16
+    hard_cut_end = hard_cut_start + (2 * bar_length)  # 2 bars fade
+
+    return {
+        'bass_swap': bass_swap,
+        'high_swap': high_swap,
+        'hard_cut_start': hard_cut_start,
+        'hard_cut_end': min(hard_cut_end, transition_duration),
+        'bar_length': bar_length,
+        'phrase_8': phrase_8,
+        'phrase_16': phrase_16,
+    }
+
+
 def main():
     print("=" * 70)
     print("MULTI-TRACK DJ MIX")
