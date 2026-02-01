@@ -1,13 +1,14 @@
 # DJ Mix Bot
 
-Automatically creates beatmatched DJ mixes from two audio tracks.
+Automatically creates beatmatched DJ mixes from multiple audio tracks.
 
 ## Features
 
-- Precise tempo detection using librosa
+- Precise tempo detection using librosa with high-resolution hop length
 - Automatic time-stretching to match tempos
-- Mathematical beat grid alignment
-- Equal-power crossfade for smooth transitions
+- Handles alternating beat patterns (8th note detection)
+- Multi-track mixing with seamless transitions
+- Equal-power crossfade for smooth blends
 
 ## Installation
 
@@ -19,9 +20,10 @@ pip install numpy librosa
 
 ## Usage
 
-1. Place your tracks in the `tracks/` directory
-2. Edit `dj_mix.py` to set your track paths and mix parameters
-3. Run the script:
+1. Create `tracks/` and `mixes/` directories
+2. Place your WAV files in `tracks/`
+3. Edit `dj_mix.py` to set your track list and parameters
+4. Run the script:
 
 ```bash
 source venv/bin/activate
@@ -36,14 +38,19 @@ Edit these parameters in `dj_mix.py`:
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `TRACK_1` | First track path | - |
-| `TRACK_2` | Second track path | - |
-| `BLEND_START_SECONDS` | When to start the transition | 96.0 |
+| `TRACKS` | List of track paths to mix | - |
+| `BLEND_BEFORE_END_SECONDS` | How early before track end to start transition | 60.0 |
 | `CROSSFADE_SECONDS` | Length of the crossfade | 30.0 |
 
 ## How It Works
 
-1. Detects tempo and first beat of each track
-2. Time-stretches track 2 to match track 1's BPM
-3. Aligns beat grids mathematically
-4. Applies equal-power crossfade during transition
+1. Analyzes each track for tempo and beat positions
+2. Detects alternating beat patterns (when librosa finds 8th notes)
+3. Time-stretches all tracks to match the first track's tempo
+4. Finds optimal beat alignment for each transition
+5. Applies equal-power crossfade during transitions
+6. Outputs blend timestamps for QA
+
+## File Format
+
+- Stereo 16-bit WAV files at 44.1kHz

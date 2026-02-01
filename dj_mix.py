@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-DJ Mix with Mathematical Beat Grid
-- Detects tempo and first beat once per track
-- Creates mathematical beat grid (not re-detecting)
-- Time-stretches track 2 and scales beat grid accordingly
+DJ Mix Bot - Multi-track beatmatched mixing
+
+Features:
+- Interval-based tempo matching (handles alternating beat patterns)
+- Automatic time-stretching to match tempos
+- Optimal beat alignment for seamless transitions
+- Equal-power crossfade
 """
 
 import wave
@@ -11,11 +14,16 @@ import numpy as np
 import librosa
 import os
 
-TRACK_1 = "tracks/Steinmetz - STNMTZ001 - Kraft - 01 Steinmetz - Kraft (Original Mix).wav"
-TRACK_2 = "tracks/Steinmetz - STNMTZ001 - Kraft - 02 Steinmetz - Werk (Original Mix).wav"
-OUTPUT = "mixes/kraft_werk_mix.wav"
+TRACKS = [
+    "tracks/Steinmetz - STNMTZ001 - Kraft - 01 Steinmetz - Kraft (Original Mix).wav",
+    "tracks/Steinmetz - STNMTZ001 - Kraft - 02 Steinmetz - Werk (Original Mix).wav",
+    "tracks/Steinmetz - STNMTZ001 - Kraft - 03 Steinmetz - Ruhe (Original Mix).wav",
+    "tracks/Steinmetz - STNMTZ001 - Kraft - 04 Steinmetz - Kraft (Edit Select Remix).wav",
+    "tracks/Steinmetz - STNMTZ001 - Kraft - 05 Steinmetz - Werk (Takaaki Itoh Remix).wav",
+]
+OUTPUT = "mixes/mix.wav"
 
-BLEND_START_SECONDS = 96.0
+BLEND_BEFORE_END_SECONDS = 60.0
 CROSSFADE_SECONDS = 30.0
 HOP_LENGTH = 128
 
@@ -38,8 +46,11 @@ def save_wav(filepath, audio, sr):
         w.writeframes(audio.tobytes())
 
 
-def detect_tempo_and_first_beat(filepath, sr):
-    """Detect tempo and first beat position"""
+def detect_beats_and_interval(filepath, sr):
+    """
+    Detect beats and calculate the actual median interval.
+    Also detects if there's an alternating pattern (8th note detection).
+    """
     y, _ = librosa.load(filepath, sr=sr, mono=True)
 
     onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=HOP_LENGTH)
@@ -48,152 +59,291 @@ def detect_tempo_and_first_beat(filepath, sr):
     )
     beat_times = librosa.frames_to_time(beat_frames, sr=sr, hop_length=HOP_LENGTH)
 
-    # Calculate tempo from median interval (more accurate)
-    intervals = np.diff(beat_times[:100])
-    actual_tempo = 60.0 / np.median(intervals)
+    if len(beat_times) < 20:
+        raise ValueError(f"Too few beats in {filepath}")
 
-    # First beat time
-    first_beat = beat_times[0]
+    intervals = np.diff(beat_times)
 
-    return actual_tempo, first_beat
+    # Check for alternating pattern (8th note detection)
+    # If intervals alternate between two distinct values, we have 8th notes
+    # Use sum of pairs as the actual beat interval
+    is_alternating = False
+    if len(intervals) >= 10:
+        even_intervals = intervals[::2][:20]
+        odd_intervals = intervals[1::2][:20]
 
+        even_median = np.median(even_intervals)
+        odd_median = np.median(odd_intervals)
 
-def create_beat_grid(first_beat, tempo, duration):
-    """Create mathematical beat grid"""
-    beat_interval = 60.0 / tempo
-    n_beats = int(duration / beat_interval) + 10
-    beat_times = first_beat + np.arange(n_beats) * beat_interval
-    return beat_times
+        # If even and odd intervals are consistently different, it's alternating
+        diff_ratio = abs(even_median - odd_median) / min(even_median, odd_median)
+        if 0.005 < diff_ratio < 0.02:  # ~0.5-2% difference is alternating pattern
+            is_alternating = True
+            # Use sum of pairs as beat interval
+            pair_intervals = even_intervals + odd_intervals[:len(even_intervals)]
+            actual_interval = np.median(pair_intervals) / 2
+            print(f"    Detected alternating pattern: {even_median*1000:.1f}ms / {odd_median*1000:.1f}ms")
+            print(f"    Using averaged interval: {actual_interval*1000:.1f}ms")
+        else:
+            actual_interval = np.median(intervals)
+    else:
+        actual_interval = np.median(intervals)
+
+    actual_bpm = 60.0 / actual_interval
+
+    return beat_times, actual_interval, actual_bpm, is_alternating
 
 
 def time_stretch_stereo(audio, rate):
-    """Time-stretch stereo audio"""
     left = librosa.effects.time_stretch(audio[:, 0].astype(np.float32), rate=rate)
     right = librosa.effects.time_stretch(audio[:, 1].astype(np.float32), rate=rate)
     return np.column_stack([left, right]).astype(np.float64)
 
 
 def main():
-    print("Loading tracks...")
-    track1, sr = load_wav_float(TRACK_1)
-    track2, _ = load_wav_float(TRACK_2)
+    print("=" * 70)
+    print("MULTI-TRACK DJ MIX")
+    print("=" * 70)
 
-    print(f"Track 1: {len(track1)/sr:.1f}s")
-    print(f"Track 2: {len(track2)/sr:.1f}s")
+    # Load all tracks and analyze beats
+    print("\nAnalyzing tracks...")
+    track_data = []
 
-    print("\nDetecting tempo and first beat...")
-    bpm1, first_beat1 = detect_tempo_and_first_beat(TRACK_1, sr)
-    bpm2, first_beat2 = detect_tempo_and_first_beat(TRACK_2, sr)
+    for i, path in enumerate(TRACKS):
+        audio, sr = load_wav_float(path)
+        duration = len(audio) / sr
 
-    print(f"Track 1: {bpm1:.2f} BPM, first beat at {first_beat1*1000:.1f}ms")
-    print(f"Track 2: {bpm2:.2f} BPM, first beat at {first_beat2*1000:.1f}ms")
+        track_name = os.path.basename(path).split(" - ")[-1].replace(".wav", "")
+        print(f"\nTrack {i+1}: {track_name} ({duration:.1f}s)")
 
-    # Create beat grids
-    grid1 = create_beat_grid(first_beat1, bpm1, len(track1)/sr)
-    grid2 = create_beat_grid(first_beat2, bpm2, len(track2)/sr)
+        beats, interval, bpm, is_alt = detect_beats_and_interval(path, sr)
+        print(f"    BPM: {bpm:.2f}, interval: {interval*1000:.2f}ms")
+        print(f"    First beat: {beats[0]:.3f}s, {len(beats)} beats total")
 
-    print(f"\nBeat grids created:")
-    print(f"  Track 1: {len(grid1)} beats, interval {60/bpm1*1000:.2f}ms")
-    print(f"  Track 2: {len(grid2)} beats, interval {60/bpm2*1000:.2f}ms")
+        track_data.append({
+            'audio': audio,
+            'beats': beats,
+            'interval': interval,
+            'bpm': bpm,
+            'is_alternating': is_alt,
+            'duration': duration,
+            'name': track_name,
+            'path': path,
+        })
 
-    # Time-stretch track 2 to match track 1's tempo
-    # rate < 1 slows down (longer), rate > 1 speeds up (shorter)
-    # We want to slow down from 130 BPM to 128.4 BPM
-    stretch_rate = bpm1 / bpm2  # 128.4 / 130.01 = 0.9876 (slower)
-    print(f"\nTime-stretching track 2 (rate: {stretch_rate:.4f})...")
-    track2_stretched = time_stretch_stereo(track2, stretch_rate)
-    print(f"  New length: {len(track2_stretched)/sr:.1f}s (was {len(track2)/sr:.1f}s)")
+    # Use first track's interval as master
+    master_interval = track_data[0]['interval']
+    master_bpm = 60.0 / master_interval
 
-    # Scale track 2's beat grid
-    # When we slow down audio (rate < 1), beat times get proportionally longer
-    # New beat time = original beat time / rate
-    grid2_stretched = grid2 / stretch_rate
-    new_interval = 60.0 / bpm1
+    print(f"\n{'='*70}")
+    print(f"Master: {master_bpm:.2f} BPM (interval: {master_interval*1000:.2f}ms)")
+    print(f"{'='*70}")
 
-    print(f"  Stretched beat interval: {new_interval*1000:.2f}ms (matches track 1)")
+    # Time-stretch all tracks to master interval
+    print("\nTime-stretching tracks to master tempo...")
+    for i, td in enumerate(track_data):
+        # Stretch rate based on INTERVALS, not BPM
+        # rate = master_interval / track_interval
+        # rate > 1 speeds up (shortens intervals)
+        # rate < 1 slows down (lengthens intervals)
+        stretch_rate = td['interval'] / master_interval
 
-    # Find blend point on track 1's grid (nearest beat to target)
-    blend_beat_idx = np.argmin(np.abs(grid1 - BLEND_START_SECONDS))
-    blend_time = grid1[blend_beat_idx]
+        td['stretch_rate'] = stretch_rate
 
-    print(f"\nBlend point: beat {blend_beat_idx} at {blend_time:.2f}s")
+        if i == 0:
+            td['audio_stretched'] = td['audio']
+            td['beats_stretched'] = td['beats']
+            td['interval_stretched'] = td['interval']
+        else:
+            if abs(stretch_rate - 1.0) > 0.001:
+                print(f"  Track {i+1}: interval {td['interval']*1000:.2f}ms -> {master_interval*1000:.2f}ms (rate: {stretch_rate:.4f})")
+                td['audio_stretched'] = time_stretch_stereo(td['audio'], stretch_rate)
+            else:
+                print(f"  Track {i+1}: already at master tempo")
+                td['audio_stretched'] = td['audio']
 
-    # Calculate track 2 start position
-    # Track 2's first beat should align with blend_time
-    track2_start_time = blend_time - grid2_stretched[0]
+            # Scale beat times
+            td['beats_stretched'] = td['beats'] / stretch_rate
+            td['interval_stretched'] = td['interval'] / stretch_rate
 
-    print(f"Track 2 starts at: {track2_start_time:.4f}s")
+        td['duration_stretched'] = len(td['audio_stretched']) / sr
 
-    # Verify beat alignment
-    print(f"\nBeat alignment verification:")
-    for i in range(8):
-        t1 = grid1[blend_beat_idx + i] if blend_beat_idx + i < len(grid1) else None
-        t2 = track2_start_time + grid2_stretched[i] if i < len(grid2_stretched) else None
-        if t1 and t2:
-            diff = (t2 - t1) * 1000
-            print(f"  Beat {i}: T1={t1:.4f}s, T2={t2:.4f}s, diff={diff:+.2f}ms")
+    # Verify stretching worked
+    print("\nVerifying tempo after stretch...")
+    for i, td in enumerate(track_data):
+        if i == 0:
+            continue
+        # Check intervals after stretching
+        stretched_intervals = np.diff(td['beats_stretched'][:20])
+        median_stretched = np.median(stretched_intervals)
+        print(f"  Track {i+1}: stretched interval = {median_stretched*1000:.2f}ms (target: {master_interval*1000:.2f}ms)")
 
-    # Build mix
-    print(f"\nBuilding mix...")
+    # Build the mix
+    print(f"\n{'='*70}")
+    print("Building mix...")
+    print(f"{'='*70}")
 
-    blend_start_sample = int(blend_time * sr)
     crossfade_samples = int(CROSSFADE_SECONDS * sr)
-    track2_start_sample = int(track2_start_time * sr)
 
-    total_length = track2_start_sample + len(track2_stretched)
-    mix = np.zeros((int(total_length), 2), dtype=np.float64)
+    # Start with first track
+    first_track = track_data[0]
+    mix = first_track['audio_stretched'].copy()
 
-    # Track 1 solo
-    print("  Track 1 solo...")
-    mix[:blend_start_sample] = track1[:blend_start_sample]
+    blend_timestamps = []
+    current_track_start = 0
 
-    # Crossfade
-    print("  Crossfade...")
-    t = np.linspace(0, 1, crossfade_samples).reshape(-1, 1)
-    fade_out = np.sqrt(1 - t)
-    fade_in = np.sqrt(t)
+    for i in range(1, len(track_data)):
+        outgoing = track_data[i-1]
+        incoming = track_data[i]
 
-    blend_end_sample = blend_start_sample + crossfade_samples
+        # Calculate blend point
+        outgoing_end = current_track_start + len(outgoing['audio_stretched'])
+        blend_target = (outgoing_end / sr) - BLEND_BEFORE_END_SECONDS
 
-    for i in range(crossfade_samples):
-        pos = blend_start_sample + i
-        if pos >= total_length:
-            break
+        # Find nearest beat on outgoing track
+        outgoing_beats_in_mix = outgoing['beats_stretched'] + current_track_start / sr
+        blend_beat_idx = np.argmin(np.abs(outgoing_beats_in_mix - blend_target))
+        blend_beat_time = outgoing_beats_in_mix[blend_beat_idx]
 
-        t1_pos = pos
-        t2_pos = pos - track2_start_sample
+        print(f"\nTransition {i} -> {i+1}")
+        print(f"  Blend at {blend_beat_time:.2f}s ({blend_beat_time/60:.1f} min)")
 
-        sample = np.zeros(2)
-        if 0 <= t1_pos < len(track1):
-            sample += track1[t1_pos] * fade_out[i, 0]
-        if 0 <= t2_pos < len(track2_stretched):
-            sample += track2_stretched[t2_pos] * fade_in[i, 0]
+        # Find best alignment for incoming track
+        # Try aligning each of the first few incoming beats to the blend point
+        best_start = None
+        best_error = float('inf')
+        best_beat_idx = 0
 
-        mix[pos] = sample
+        for try_idx in range(min(30, len(incoming['beats_stretched']))):
+            try_beat = incoming['beats_stretched'][try_idx]
+            try_start = blend_beat_time - try_beat
 
-    # Track 2 solo
-    print("  Track 2 solo...")
-    for i in range(blend_end_sample, int(total_length)):
-        t2_pos = i - track2_start_sample
-        if 0 <= t2_pos < len(track2_stretched):
-            mix[i] = track2_stretched[t2_pos]
+            # Calculate cumulative alignment error over crossfade
+            in_beats_in_mix = incoming['beats_stretched'] + try_start
+            xfade_in_beats = in_beats_in_mix[(in_beats_in_mix >= blend_beat_time) &
+                                              (in_beats_in_mix <= blend_beat_time + CROSSFADE_SECONDS)]
+
+            if len(xfade_in_beats) < 5:
+                continue
+
+            # Calculate error against master grid
+            # Master grid: blend_beat_time + n * master_interval
+            total_error = 0
+            for beat in xfade_in_beats[:10]:
+                offset_from_blend = beat - blend_beat_time
+                n = round(offset_from_blend / master_interval)
+                expected = blend_beat_time + n * master_interval
+                error = abs(beat - expected)
+                total_error += error
+
+            avg_error = total_error / min(10, len(xfade_in_beats))
+
+            if avg_error < best_error:
+                best_error = avg_error
+                best_start = try_start
+                best_beat_idx = try_idx
+
+        if best_start is None:
+            # Fallback
+            best_start = blend_beat_time - incoming['beats_stretched'][0]
+            best_beat_idx = 0
+            best_error = 0
+
+        incoming_start_sample = int(best_start * sr)
+        print(f"  Incoming beat {best_beat_idx} aligns with blend point")
+        print(f"  Incoming starts at {best_start:.3f}s")
+        print(f"  Avg alignment error: {best_error*1000:.1f}ms")
+
+        # Verify alignment
+        in_beats_in_mix = incoming['beats_stretched'] + best_start
+        xfade_in_beats = in_beats_in_mix[(in_beats_in_mix >= blend_beat_time) &
+                                          (in_beats_in_mix <= blend_beat_time + CROSSFADE_SECONDS)]
+        xfade_out_beats = outgoing_beats_in_mix[(outgoing_beats_in_mix >= blend_beat_time) &
+                                                 (outgoing_beats_in_mix <= blend_beat_time + CROSSFADE_SECONDS)]
+
+        print(f"  Beat check:")
+        for j in range(min(5, len(xfade_out_beats), len(xfade_in_beats))):
+            out_b = xfade_out_beats[j]
+            in_b = xfade_in_beats[j]
+            diff = (in_b - out_b) * 1000
+            print(f"    Beat {j}: out={out_b:.4f}s, in={in_b:.4f}s, diff={diff:+.1f}ms")
+
+        # Build crossfade
+        required_length = incoming_start_sample + len(incoming['audio_stretched'])
+        if required_length > len(mix):
+            new_mix = np.zeros((required_length, 2), dtype=np.float64)
+            new_mix[:len(mix)] = mix
+            mix = new_mix
+
+        blend_start_sample = int(blend_beat_time * sr)
+        t = np.linspace(0, 1, crossfade_samples).reshape(-1, 1)
+        fade_out = np.sqrt(1 - t)
+        fade_in = np.sqrt(t)
+
+        blend_end_sample = blend_start_sample + crossfade_samples
+
+        for j in range(crossfade_samples):
+            pos = blend_start_sample + j
+            if pos >= len(mix):
+                break
+
+            out_pos = pos - current_track_start
+            in_pos = pos - incoming_start_sample
+
+            sample = np.zeros(2)
+            if 0 <= out_pos < len(outgoing['audio_stretched']):
+                sample += outgoing['audio_stretched'][out_pos] * fade_out[j, 0]
+            if 0 <= in_pos < len(incoming['audio_stretched']):
+                sample += incoming['audio_stretched'][in_pos] * fade_in[j, 0]
+
+            mix[pos] = sample
+
+        # Incoming solo
+        incoming_audio = incoming['audio_stretched']
+        for j in range(blend_end_sample, incoming_start_sample + len(incoming_audio)):
+            if j >= len(mix):
+                break
+            in_pos = j - incoming_start_sample
+            if 0 <= in_pos < len(incoming_audio):
+                mix[j] = incoming_audio[in_pos]
+
+        current_track_start = incoming_start_sample
+        blend_timestamps.append({
+            'from_name': outgoing['name'],
+            'to_name': incoming['name'],
+            'blend_start': blend_beat_time,
+            'blend_end': blend_beat_time + CROSSFADE_SECONDS,
+            'alignment_error_ms': best_error * 1000,
+        })
 
     # Normalize
     peak = np.max(np.abs(mix))
     if peak > 0.99:
-        print(f"  Normalizing (peak: {peak:.2f})...")
+        print(f"\nNormalizing (peak: {peak:.2f})...")
         mix = mix * 0.95 / peak
 
     # Save
     os.makedirs("mixes", exist_ok=True)
     save_wav(OUTPUT, mix, sr)
 
-    print(f"\n{'='*60}")
+    # Summary
+    print(f"\n{'='*70}")
     print(f"MIX COMPLETE: {OUTPUT}")
     print(f"Duration: {len(mix)/sr/60:.1f} min")
-    print(f"Track 1: {bpm1:.2f} BPM")
-    print(f"Track 2: {bpm2:.2f} -> {bpm1:.2f} BPM (stretched)")
-    print(f"{'='*60}")
+    print(f"Master tempo: {master_bpm:.2f} BPM")
+    print(f"{'='*70}")
+
+    print(f"\nBLEND TIMESTAMPS FOR QA:")
+    print("-" * 70)
+    for bt in blend_timestamps:
+        start_mm = int(bt['blend_start'] // 60)
+        start_ss = bt['blend_start'] % 60
+        end_mm = int(bt['blend_end'] // 60)
+        end_ss = bt['blend_end'] % 60
+        print(f"  {bt['from_name'][:30]:30} -> {bt['to_name'][:30]}")
+        print(f"    Blend: {start_mm}:{start_ss:05.2f} - {end_mm}:{end_ss:05.2f}")
+        print(f"    Alignment error: {bt['alignment_error_ms']:.1f}ms")
+        print()
 
 
 if __name__ == "__main__":

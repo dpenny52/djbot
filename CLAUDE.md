@@ -1,6 +1,6 @@
 # DJ Mix Bot
 
-Creates beatmatched DJ mixes from two tracks.
+Creates beatmatched DJ mixes from multiple tracks.
 
 ## Key Learnings
 
@@ -8,16 +8,24 @@ Creates beatmatched DJ mixes from two tracks.
 - Librosa's default `beat_track` rounds tempo, hiding small BPM differences
 - Use `hop_length=128` (not default 512) for ~3ms precision instead of ~12ms
 - Calculate actual BPM from `60 / median(beat_intervals)`, not librosa's returned tempo
+- **Alternating beat patterns**: Some tracks have librosa detecting 8th notes (alternating short/long intervals like 467ms/470ms). Detect this pattern and average the intervals to get true quarter-note tempo
 
 ### Time-Stretching
 - `librosa.effects.time_stretch(audio, rate)`: rate < 1 slows down, rate > 1 speeds up
-- To match tempos: `stretch_rate = target_bpm / source_bpm`
+- **Use interval ratios, not BPM ratios**: `stretch_rate = source_interval / target_interval`
 - After stretching, scale beat times: `new_beat_times = old_beat_times / stretch_rate`
 
 ### Beat Alignment
 - Don't re-detect beats after stretching (inconsistent results)
-- Create mathematical beat grid: `first_beat + np.arange(n) * (60/bpm)`
-- Align track 2's first beat to land on track 1's beat at blend point
+- **Tracks have tempo drift**: A single phase value won't work for the whole track
+- Use actual detected beat times for alignment, not mathematical grids
+- Try multiple alignment points (first 30 beats) and pick the one with lowest cumulative error
+- **Ambient intros**: Some tracks have 30+ seconds before first detected beat - handle gracefully
+
+### Multi-Track Mixing
+- Chain tracks by calculating blend point relative to outgoing track end
+- Each incoming track needs independent tempo matching to master
+- Track cumulative position in mix to correctly place each track
 
 ### Crossfade
 - Equal-power crossfade prevents volume dip: `fade_out = sqrt(1-t)`, `fade_in = sqrt(t)`
@@ -38,4 +46,4 @@ pip install numpy librosa
 
 - Expects stereo 16-bit WAV files (44.1kHz)
 - `tracks/` and `mixes/` directories are gitignored - create them manually
-- Track paths are hardcoded in `dj_mix.py` - edit before running
+- Edit `TRACKS` list in `dj_mix.py` to set your track paths
