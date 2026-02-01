@@ -30,6 +30,13 @@ Creates beatmatched DJ mixes from multiple tracks.
 ### Crossfade
 - Equal-power crossfade prevents volume dip: `fade_out = sqrt(1-t)`, `fade_in = sqrt(t)`
 
+### 3-Band EQ Mixing
+- Use scipy butterworth filters (24dB/octave) for clean band separation
+- Crossovers: Low 0-250Hz, Mid 250-2500Hz, High 2500Hz+
+- Bass swaps on 16-bar boundaries (never both tracks at once)
+- Highs swap on 8-bar boundaries, offset from bass
+- Mids blend gradually with hard cut at end
+
 ## Usage
 
 ```bash
@@ -39,7 +46,7 @@ source venv/bin/activate && python dj_mix.py
 ## Dependencies
 
 ```bash
-pip install numpy librosa
+pip install numpy librosa scipy
 ```
 
 ## Notes
