@@ -196,6 +196,108 @@ def calculate_phrase_points(blend_start, master_interval, transition_duration):
     }
 
 
+def mix_with_eq(outgoing_audio, incoming_audio, outgoing_start_sample,
+                incoming_start_sample, blend_start_sample, blend_duration_samples,
+                sr, master_interval):
+    """
+    Mix two tracks using 3-band EQ with phrase-based timing.
+
+    Returns the mixed audio for the transition region.
+    """
+    blend_duration_sec = blend_duration_samples / sr
+    timing = calculate_phrase_points(0, master_interval, blend_duration_sec)
+
+    # Split both tracks into bands
+    out_bands = split_to_bands(outgoing_audio, sr)
+    in_bands = split_to_bands(incoming_audio, sr)
+
+    # Pre-calculate timing in samples
+    bass_swap_sample = int(timing['bass_swap'] * sr)
+    high_swap_sample = int(timing['high_swap'] * sr)
+    hard_cut_start_sample = int(timing['hard_cut_start'] * sr)
+    hard_cut_end_sample = int(timing['hard_cut_end'] * sr)
+    bar_samples = int(timing['bar_length'] * sr)
+    beat_samples = bar_samples // 4
+
+    # Build output array
+    output = np.zeros((blend_duration_samples, 2), dtype=np.float64)
+
+    for i in range(blend_duration_samples):
+        blend_pos = i  # Position within blend region
+
+        out_pos = (blend_start_sample + i) - outgoing_start_sample
+        in_pos = (blend_start_sample + i) - incoming_start_sample
+
+        # Get samples from each band (with bounds checking)
+        out_low = out_bands['low'][out_pos] if 0 <= out_pos < len(out_bands['low']) else np.zeros(2)
+        out_mid = out_bands['mid'][out_pos] if 0 <= out_pos < len(out_bands['mid']) else np.zeros(2)
+        out_high = out_bands['high'][out_pos] if 0 <= out_pos < len(out_bands['high']) else np.zeros(2)
+
+        in_low = in_bands['low'][in_pos] if 0 <= in_pos < len(in_bands['low']) else np.zeros(2)
+        in_mid = in_bands['mid'][in_pos] if 0 <= in_pos < len(in_bands['mid']) else np.zeros(2)
+        in_high = in_bands['high'][in_pos] if 0 <= in_pos < len(in_bands['high']) else np.zeros(2)
+
+        # === BASS: swap at 16-bar boundary, no overlap ===
+        if blend_pos < bass_swap_sample:
+            out_low_gain = 1.0
+            in_low_gain = 0.0
+        else:
+            out_low_gain = 0.0
+            in_low_gain = 1.0
+
+        # === HIGHS: swap at 8-bar boundary (offset from bass) ===
+        if blend_pos < high_swap_sample:
+            out_high_gain = 1.0
+            in_high_gain = 0.0
+        else:
+            out_high_gain = 0.0
+            in_high_gain = 1.0
+
+        # === MIDS: gradual blend ===
+        # Outgoing: 100% -> 30% over transition, then hard cut over 2 beats
+        # Incoming: 0% -> 30% over 4 beats, then rise to 100%
+
+        progress = blend_pos / blend_duration_samples
+
+        # Incoming mid: 0% -> 30% over first 4 beats, then to 100%
+        four_beats = 4 * beat_samples
+        if blend_pos < four_beats:
+            in_mid_gain = 0.3 * (blend_pos / four_beats)
+        else:
+            # Rise from 30% to 100% over remaining transition
+            remaining_progress = (blend_pos - four_beats) / (blend_duration_samples - four_beats)
+            in_mid_gain = 0.3 + 0.7 * remaining_progress
+
+        # Outgoing mid: 100% -> 30%, then hard cut over 2 beats at end
+        two_beats = 2 * beat_samples
+        if blend_pos < hard_cut_start_sample:
+            # Fade from 100% to 30%
+            fade_progress = blend_pos / hard_cut_start_sample
+            out_mid_gain = 1.0 - 0.7 * fade_progress
+        elif blend_pos < hard_cut_end_sample:
+            # Hard cut from 30% to 0% over 2 beats
+            cut_progress = (blend_pos - hard_cut_start_sample) / (hard_cut_end_sample - hard_cut_start_sample)
+            out_mid_gain = 0.3 * (1.0 - cut_progress)
+        else:
+            out_mid_gain = 0.0
+
+        # Apply hard cut to all outgoing bands at the end
+        if blend_pos >= hard_cut_start_sample:
+            cut_progress = (blend_pos - hard_cut_start_sample) / (hard_cut_end_sample - hard_cut_start_sample)
+            cut_progress = min(1.0, cut_progress)
+            out_low_gain *= (1.0 - cut_progress)
+            out_high_gain *= (1.0 - cut_progress)
+
+        # Combine
+        sample = (out_low * out_low_gain + in_low * in_low_gain +
+                  out_mid * out_mid_gain + in_mid * in_mid_gain +
+                  out_high * out_high_gain + in_high * in_high_gain)
+
+        output[i] = sample
+
+    return output
+
+
 def main():
     print("=" * 70)
     print("MULTI-TRACK DJ MIX")
